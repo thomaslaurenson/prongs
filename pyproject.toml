@@ -1,10 +1,10 @@
 [project]
 name = "prongs"
-version = "0.3.0"
+version = "0.3.1"
 description = "Fast, custom security scanner"
 authors = [{name = "Thomas Laurenson", email = "tom.laurenson@auckland.ac.nz"}]
 readme = "README.md"
-license = {text = "MIT"}
+license = "MIT"
 requires-python = ">=3.9"
 dependencies = [
     "paramiko>=3.5.1",
@@ -20,8 +20,8 @@ dev = [
 [project.scripts]
 prongs = "app.run:main"
 
-[tool.setuptools]
-packages = ["app"]
+[tool.setuptools.packages.find]
+include = ["app*"]
 
 [tool.ruff]
 line-length = 120

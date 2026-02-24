@@ -1,13 +1,13 @@
 SHELL := /bin/bash
 
-.PHONY: help install install_all update clean build lint format format_check test docker_build docker_run tag_release
+.PHONY: help install install_all pip_install update clean build lint format format_check test docker_build docker_run tag_release
 
 help:
 	@echo "Available targets:"
-	@echo "  install         Install dependencies"
-	@echo "  install_all     Install all optional dependencies"
+	@echo "  install         Install dependencies (uv)"
+	@echo "  install_all     Install all optional dependencies (uv)"
 	@echo "  update          Update all packages to latest versions"
-	@echo "  clean           Remove .venv and dist directories"
+	@echo "  clean           Remove build artifacts"
 	@echo "  build           Build the package"
 	@echo "  lint            Check code with ruff"
 	@echo "  format          Format code with ruff"
@@ -28,7 +28,10 @@ update:
 	uv sync --all-extras
 
 clean:
-	rm -rf .venv dist
+	rm -rf .venv dist build
+	find . -type d -name '__pycache__' -exec rm -rf {} +
+	find . -type d -name '*.egg-info' -exec rm -rf {} +
+	find . -type f -name '*.pyc' -delete
 
 build:
 	uv build

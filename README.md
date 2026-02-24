@@ -8,29 +8,7 @@ Fast, custom security scanner
 
 ## Installation
 
-### Option 1: Install from source using pip
-
-- Requirements:
-  - git
-  - Python 3.9+
-
-```bash
-# Clone repo
-git clone https://github.com/UoA-eResearch/prongs.git
-cd prongs
-
-# Create and activate virtual environment
-python3 -m venv .venv
-source .venv/bin/activate
-
-# Install
-pip install .
-
-# Run
-prongs --help
-```
-
-### Option 2: Development setup using uv
+### Option 1: Development setup using uv
 
 - Requirements:
   - git
@@ -48,7 +26,7 @@ uv sync --all-extras
 uv run prongs --help
 ```
 
-### Option 3: Container
+### Option 2: Container
 
 Pull the pre-built image from GitHub Container Registry:
 
@@ -64,7 +42,7 @@ docker build -f app/Dockerfile -t prongs .
 
 ## Usage
 
-### Examples
+### CLI Examples
 
 - Execute password SSH check against two target networks:
 
@@ -85,8 +63,16 @@ prongs -s password-ssh -f targets.txt
 TARGET_CIDRS=192.168.0.0/32,192.168.88.0/24 prongs -s password-ssh -e
 ```
 
-### Running with Docker
+### Docker Examples
+
+- Run with all scanners and pull GHCR image:
 
 ```bash
 docker run -e TARGET_CIDRS=192.168.0.0/32,192.168.88.0/24 ghcr.io/uoa-eresearch/prongs:latest
+```
+
+- Run with one scanner, using local image:
+
+```bash
+docker run -e TARGET_CIDRS=192.168.0.0/32,192.168.88.0/24 prongs:latest -s password-ssh
 ```

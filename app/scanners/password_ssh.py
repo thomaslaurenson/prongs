@@ -1,4 +1,5 @@
 import ipaddress
+import logging
 import socket
 import threading
 import time
@@ -9,6 +10,9 @@ from queue import Queue
 import paramiko
 
 from .. import config
+
+# Suppress paramiko's internal transport error logging - these are handled exceptions
+logging.getLogger("paramiko.transport").setLevel(logging.CRITICAL)
 
 PROGRESS_COUNTER = 0
 
@@ -26,33 +30,31 @@ def check_ssh_password_auth(ip: str, port: int, result_queue: Queue) -> bool:
         PROGRESS_COUNTER += 1
         return
 
-    # Attempt to connect to SSH on port 22
-    # Set a timeout for 2 seconds
-    # Catch any SSH exception or socket error and quit
+    # Reuse the existing socket - avoids a second connection and ensures it gets closed
+    transport = None
     try:
-        transport = paramiko.Transport((ip, port))
+        transport = paramiko.Transport(sock)
         transport.start_client(timeout=2)
-    except (paramiko.SSHException, socket.error):
-        result_queue.put((ip, port, False))
-        PROGRESS_COUNTER += 1
-        return
 
-    # Try to authenticate with no authentication at all and a "random" username
-    # We do this to get a list of available authentication methods
-    # Check the available authentication methods for "password"
-    try:
-        transport.auth_none("cats_are_mythical")
-    except paramiko.BadAuthenticationType as e:
-        if "password" in e.allowed_types:
-            result_queue.put((ip, port, True))
-            PROGRESS_COUNTER += 1
-            return
-    except paramiko.SSHException:
-        result_queue.put((ip, port, False))
-        PROGRESS_COUNTER += 1
-        return
+        # Try to authenticate with no authentication at all and a "random" username
+        # We do this to get a list of available authentication methods
+        # Check the available authentication methods for "password"
+        try:
+            transport.auth_none("cats_are_mythical")
+        except paramiko.BadAuthenticationType as e:
+            if "password" in e.allowed_types:
+                result_queue.put((ip, port, True))
+                PROGRESS_COUNTER += 1
+                return
+        except paramiko.SSHException:
+            pass
+    except (paramiko.SSHException, socket.error):
+        pass
     finally:
-        transport.close()
+        if transport:
+            transport.close()
+        else:
+            sock.close()
 
     PROGRESS_COUNTER += 1
     result_queue.put((ip, port, False))
