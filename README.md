@@ -68,11 +68,11 @@ TARGET_CIDRS=192.168.0.0/32,192.168.88.0/24 prongs -s password-ssh -e
 - Run with all scanners and pull GHCR image:
 
 ```bash
-docker run -e TARGET_CIDRS=192.168.0.0/32,192.168.88.0/24 ghcr.io/uoa-eresearch/prongs:latest
+docker run --rm -e TARGET_CIDRS=192.168.0.0/32,192.168.88.0/24 ghcr.io/uoa-eresearch/prongs:latest -e
 ```
 
-- Run with one scanner, using local image:
+- Run with one scanner, using local image and remove after execution:
 
 ```bash
-docker run -e TARGET_CIDRS=192.168.0.0/32,192.168.88.0/24 prongs:latest -s password-ssh
+docker run --rm -e TARGET_CIDRS=192.168.0.0/32,192.168.88.0/24 prongs:latest -s password-ssh -e
 ```
