@@ -1,11 +1,10 @@
 package scanner
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"net/url"
-	"strconv"
-	"time"
 
 	"github.com/thomaslaurenson/prongs/internal/config"
 )
@@ -35,18 +34,32 @@ const httpPort = 80
 // this is an inherent limitation of IP-based scanning.
 type InsecureHTTP struct{}
 
+var _ Scanner = (*InsecureHTTP)(nil)
+
 func (s *InsecureHTTP) Name() string         { return "insecure-http" }
 func (s *InsecureHTTP) DefaultEnabled() bool { return true }
 
-func (s *InsecureHTTP) Run(ip net.IP) (Result, bool) {
-	rawURL := "http://" + net.JoinHostPort(ip.String(), strconv.Itoa(httpPort)) + "/"
-	return s.probe(ip, rawURL)
+func (s *InsecureHTTP) Run(ctx context.Context, ip net.IP) (Result, bool) {
+	return s.probe(ctx, ip, "http://"+addr(ip, httpPort)+"/")
 }
 
 // probe issues GET rawURL and, on a plaintext finding, returns a Result for ip.
-func (s *InsecureHTTP) probe(ip net.IP, rawURL string) (Result, bool) {
+func (s *InsecureHTTP) probe(ctx context.Context, ip net.IP, rawURL string) (Result, bool) {
+	// A deadline as well as the cancel: a server that accepts the connection and
+	// then trickles bytes is not an interrupted request, and only the deadline
+	// ends it.
+	ctx, cancel := context.WithTimeout(ctx, config.DefaultTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return Result{}, false
+	}
+
 	client := &http.Client{
-		Timeout: time.Duration(config.DefaultTimeout) * time.Second,
+		// No Client.Timeout: the context deadline above already bounds the whole
+		// exchange, including reading the body.
+		//
 		// Do not follow redirects: we classify the first response ourselves so an
 		// https redirect (clean) is distinguished from one that stays on plaintext.
 		CheckRedirect: func(*http.Request, []*http.Request) error {
@@ -55,22 +68,16 @@ func (s *InsecureHTTP) probe(ip net.IP, rawURL string) (Result, bool) {
 		Transport: &http.Transport{DisableKeepAlives: true},
 	}
 
-	resp, err := client.Get(rawURL)
+	resp, err := client.Do(req)
 	if err != nil {
 		return Result{}, false
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if !servedOverPlaintext(resp) {
 		return Result{}, false
 	}
-
-	return Result{
-		Timestamp: time.Now().UTC(),
-		IP:        ip,
-		ScanType:  s.Name(),
-		Port:      httpPort,
-	}, true
+	return finding(s, ip, httpPort), true
 }
 
 // servedOverPlaintext reports whether resp indicates the site is served over

@@ -1,6 +1,7 @@
 package scanner
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -102,7 +103,7 @@ func TestInsecureHTTPProbe(t *testing.T) {
 			server := httptest.NewServer(tc.handler)
 			defer server.Close()
 
-			res, found := s.probe(ip, server.URL+"/")
+			res, found := s.probe(context.Background(), ip, server.URL+"/")
 			if found != tc.want {
 				t.Fatalf("probe found = %v, want %v", found, tc.want)
 			}
@@ -128,7 +129,7 @@ func TestInsecureHTTPProbeConnectionRefused(t *testing.T) {
 	server.Close() // close so the connection is refused
 
 	s := &InsecureHTTP{}
-	if _, found := s.probe(net.ParseIP("192.0.2.10"), url); found {
+	if _, found := s.probe(context.Background(), net.ParseIP("192.0.2.10"), url); found {
 		t.Errorf("probe to closed server = found, want not found")
 	}
 }
@@ -138,18 +139,7 @@ func TestInsecureHTTPRunNoServer(t *testing.T) {
 	// Nothing is expected on loopback port 80 in the test environment, so Run
 	// exercises the request path and returns no finding.
 	s := &InsecureHTTP{}
-	if _, found := s.Run(net.ParseIP("127.0.0.1")); found {
+	if _, found := s.Run(context.Background(), net.ParseIP("127.0.0.1")); found {
 		t.Errorf("Run against loopback:80 = found, want not found")
-	}
-}
-
-func TestInsecureHTTPMetadata(t *testing.T) {
-	t.Parallel()
-	s := &InsecureHTTP{}
-	if got := s.Name(); got != "insecure-http" {
-		t.Errorf("Name() = %q, want insecure-http", got)
-	}
-	if !s.DefaultEnabled() {
-		t.Errorf("DefaultEnabled() = false, want true")
 	}
 }

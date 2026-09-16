@@ -1,40 +1,42 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
+	"io"
+	"log/slog"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
+
 	"github.com/thomaslaurenson/prongs/internal/config"
 	"github.com/thomaslaurenson/prongs/internal/engine"
 	"github.com/thomaslaurenson/prongs/internal/scanner"
 	"github.com/thomaslaurenson/prongs/internal/target"
 )
 
-func newScanCmd() *cobra.Command {
-	var (
-		targetArgs  []string
-		targetFile  string
-		scannerArgs []string
-		all         bool
-		output      string
-		concurrency int
-	)
+// targetEnv names the environment variable consulted when neither --target nor
+// --target-file is given.
+const targetEnv = "TARGET_CIDRS"
 
-	var scannerNames []string
-	for _, s := range scanner.All {
-		scannerNames = append(scannerNames, s.Name())
-	}
+// The two accepted --output values.
+const (
+	outputText   = "text"
+	outputPretty = "pretty"
+)
 
-	cmd := &cobra.Command{
-		Use:   "scan",
-		Short: "Run scanners against target CIDRs",
-		Long: `Run one or more scanners against one or more target networks.
+const scanLong = `Run one or more scanners against one or more target networks.
 
 Targets are CIDR ranges or single IPs, provided via --target (repeatable
 and/or comma-separated) or --target-file (a file, one entry per line). The
 two flags are mutually exclusive. If neither is provided, the TARGET_CIDRS
 environment variable (comma-separated) is used as a fallback.
+
+Findings go to stdout, one per line. Progress and diagnostics go to stderr,
+and progress is suppressed when stderr is not a terminal, so a redirected run
+captures the findings and nothing else.
 
 Examples:
   # Run one scanner against a single network
@@ -56,67 +58,127 @@ Examples:
   prongs scan --all --target 192.168.0.0/24 --concurrency 50
 
   # Use the TARGET_CIDRS environment variable (comma-separated)
-  TARGET_CIDRS=192.168.0.0/24,10.0.0.0/24 prongs scan --all`,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if output != "text" && output != "pretty" {
-				return fmt.Errorf("--output must be 'text' or 'pretty', got %q", output)
-			}
+  TARGET_CIDRS=192.168.0.0/24,10.0.0.0/24 prongs scan --all`
 
-			if !all && len(scannerArgs) == 0 {
-				return fmt.Errorf("provide --scanner <name> or --all\nAvailable: %s",
-					strings.Join(scannerNames, ", "))
-			}
+func (a *App) newScanCmd() *cobra.Command {
+	var (
+		targetArgs  []string
+		targetFile  string
+		scannerArgs []string
+		all         bool
+		output      string
+		concurrency int
+	)
 
-			if len(targetArgs) > 0 && targetFile != "" {
-				return fmt.Errorf("--target and --target-file are mutually exclusive")
-			}
+	c := &cobra.Command{
+		Use:   "scan",
+		Short: "Run scanners against target CIDRs",
+		Long:  scanLong,
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			logger := newLogger(cmd.ErrOrStderr(), a.debug)
 
-			var active []scanner.Scanner
-			if all {
-				active = scanner.Defaults()
-			} else {
-				for _, name := range scannerArgs {
-					s, ok := scanner.ByName[name]
-					if !ok {
-						return fmt.Errorf("unknown scanner %q - available: %s",
-							name, strings.Join(scannerNames, ", "))
-					}
-					active = append(active, s)
-				}
-			}
-
-			cidrList, err := target.Resolve(targetArgs, targetFile)
+			active, err := selectScanners(all, scannerArgs)
 			if err != nil {
 				return err
 			}
-			if len(cidrList) == 0 {
-				return fmt.Errorf("no valid targets found")
+			if output != outputText && output != outputPretty {
+				return fmt.Errorf("--output must be %q or %q, got %q", outputText, outputPretty, output)
+			}
+			if concurrency < 1 {
+				return fmt.Errorf("--concurrency must be at least 1, got %d", concurrency)
+			}
+			if len(targetArgs) > 0 && targetFile != "" {
+				return errors.New("--target and --target-file are mutually exclusive")
 			}
 
-			hosts, err := target.Expand(cidrList)
+			cidrs, err := target.Resolve(targetArgs, targetFile, os.Getenv(targetEnv))
+			if err != nil {
+				if errors.Is(err, target.ErrNoTargets) {
+					return fmt.Errorf("%w: pass --target, --target-file, or set %s", err, targetEnv)
+				}
+				return err
+			}
+
+			hosts, err := target.Expand(cidrs)
 			if err != nil {
 				return err
 			}
 			if len(hosts) == 0 {
-				return fmt.Errorf("no valid IP addresses found after CIDR expansion")
+				return errors.New("targets expanded to no host addresses")
 			}
+			logger.Debug("targets expanded",
+				slog.Int("cidrs", len(cidrs)), slog.Int("hosts", len(hosts)))
 
-			engine.Run(active, hosts, concurrency, output == "pretty")
-			return nil
+			return engine.Run(cmd.Context(), engine.Options{
+				Scanners:    active,
+				Hosts:       hosts,
+				Concurrency: concurrency,
+				Pretty:      output == outputPretty,
+				Out:         cmd.OutOrStdout(),
+				Progress:    progressWriter(cmd),
+				Logger:      logger,
+			})
 		},
 	}
 
-	cmd.Flags().StringArrayVar(&targetArgs, "target", nil,
-		"CIDR(s) to scan (repeatable, comma-separated)")
-	cmd.Flags().StringVar(&targetFile, "target-file", "",
-		"Path to a file of CIDRs or IPs, one per line")
-	cmd.Flags().StringArrayVar(&scannerArgs, "scanner", nil,
-		fmt.Sprintf("Scanner to run (repeatable) - choices: %s", strings.Join(scannerNames, ", ")))
-	cmd.Flags().BoolVar(&all, "all", false, "Run all default-enabled scanners")
-	cmd.Flags().StringVar(&output, "output", "text",
-		"Output format: 'text' (TSV, default) or 'pretty' (human-readable)")
-	cmd.Flags().IntVarP(&concurrency, "concurrency", "c", config.DefaultConcurrency,
-		"Max concurrent probes")
+	c.Flags().StringArrayVar(&targetArgs, "target", nil,
+		"CIDR or IP to scan (repeatable, comma-separated)")
+	c.Flags().StringVar(&targetFile, "target-file", "",
+		"path to a file of CIDRs or IPs, one per line")
+	c.Flags().StringArrayVar(&scannerArgs, "scanner", nil,
+		fmt.Sprintf("scanner to run (repeatable), one of: %s", strings.Join(scannerNames(), ", ")))
+	c.Flags().BoolVar(&all, "all", false, "run every default-enabled scanner")
+	c.Flags().StringVar(&output, "output", outputText,
+		fmt.Sprintf("output format, %q (tab-separated) or %q (human-readable)", outputText, outputPretty))
+	c.Flags().IntVarP(&concurrency, "concurrency", "c", config.DefaultConcurrency,
+		"maximum concurrent probes")
 
-	return cmd
+	a.registerScanCompletions(c)
+	return c
+}
+
+// selectScanners resolves --all and --scanner into the scanners to run.
+func selectScanners(all bool, names []string) ([]scanner.Scanner, error) {
+	if all && len(names) > 0 {
+		return nil, errors.New("--all and --scanner are mutually exclusive")
+	}
+	if all {
+		return scanner.Defaults(), nil
+	}
+	if len(names) == 0 {
+		return nil, fmt.Errorf("no scanner selected: pass --all, or --scanner with one of: %s",
+			strings.Join(scannerNames(), ", "))
+	}
+
+	var active []scanner.Scanner
+	for _, name := range names {
+		s, ok := scanner.ByName[name]
+		if !ok {
+			return nil, fmt.Errorf("unknown scanner %q, expected one of: %s",
+				name, strings.Join(scannerNames(), ", "))
+		}
+		active = append(active, s)
+	}
+	return active, nil
+}
+
+// scannerNames lists every registered scanner name in registration order.
+func scannerNames() []string {
+	names := make([]string, 0, len(scanner.All))
+	for _, s := range scanner.All {
+		names = append(names, s.Name())
+	}
+	return names
+}
+
+// progressWriter returns the writer the scan reports progress to: the command's
+// error stream when stderr is a terminal, and io.Discard otherwise. Whether a
+// stream is a terminal is a fact about the process, so it is settled here rather
+// than pushed down into the engine.
+func progressWriter(cmd *cobra.Command) io.Writer {
+	if term.IsTerminal(int(os.Stderr.Fd())) {
+		return cmd.ErrOrStderr()
+	}
+	return io.Discard
 }

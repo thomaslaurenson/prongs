@@ -1,32 +1,29 @@
 package scanner
 
 import (
+	"context"
 	"net"
-	"time"
 
 	"github.com/thomaslaurenson/prongs/internal/config"
 )
 
-// AccessibleRDP checks if TCP 3389 (RDP) is reachable.
+// rdpPort is the TCP port RDP listens on.
+const rdpPort = 3389
+
+// AccessibleRDP reports whether RDP is reachable on a host.
 type AccessibleRDP struct{}
+
+var _ Scanner = (*AccessibleRDP)(nil)
 
 func (s *AccessibleRDP) Name() string { return "accessible-rdp" }
 
-// DefaultEnabled returns false - mirrors the Python behaviour where accessible-rdp
-// was silently excluded from --enable-all. Now it's explicit.
+// DefaultEnabled returns false: an exposed RDP port is common enough on an
+// internal network that including it in --all buries the other findings.
 func (s *AccessibleRDP) DefaultEnabled() bool { return false }
 
-func (s *AccessibleRDP) Run(ip net.IP) (Result, bool) {
-	addr := net.JoinHostPort(ip.String(), "3389")
-	conn, err := net.DialTimeout("tcp", addr, time.Duration(config.DefaultTimeout)*time.Second)
-	if err != nil {
+func (s *AccessibleRDP) Run(ctx context.Context, ip net.IP) (Result, bool) {
+	if !dialable(ctx, ip, rdpPort, config.DefaultTimeout) {
 		return Result{}, false
 	}
-	conn.Close()
-	return Result{
-		Timestamp: time.Now().UTC(),
-		IP:        ip,
-		ScanType:  s.Name(),
-		Port:      3389,
-	}, true
+	return finding(s, ip, rdpPort), true
 }
