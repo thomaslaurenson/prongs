@@ -1,72 +1,96 @@
 SHELL := /bin/bash
-BINARY  := prongs
-MODULE  := github.com/thomaslaurenson/prongs
-VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
-LDFLAGS := -s -w -X $(MODULE)/cmd.Version=$(VERSION)
 
-TAG     ?= $(shell git describe --tags --abbrev=0 2>/dev/null)
+BINARY    := prongs
+MODULE    := github.com/thomaslaurenson/prongs
+VERSION   := $(shell git describe --tags --always --dirty --match 'v*' 2>/dev/null || echo dev)
+LDFLAGS   := -s -w -X $(MODULE)/cmd.Version=$(VERSION)
+GOIMPORTS := go run golang.org/x/tools/cmd/goimports@latest -local $(MODULE)
 
+TAG ?= $(shell git describe --tags --abbrev=0 --match 'v*' 2>/dev/null)
+
+##@ BUILD
 
 .PHONY: help
 help: ## Show this help message
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
-		| awk 'BEGIN {FS = ":.*?## "}; {printf "  %-18s %s\n", $$1, $$2}'
+	@awk 'BEGIN {FS = ":.*?## "} /^##@ / {printf "\n%s\n", substr($$0, 5)} \
+		/^[a-zA-Z_-]+:.*## / {printf "  %-18s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
-# BUILD
 .PHONY: build
-build: ## Build binary for current platform
-	go build -ldflags="$(LDFLAGS)" -o dist/$(BINARY) .
+build: ## Build the prongs binary into dist/
+	@go build -ldflags="$(LDFLAGS)" -o dist/$(BINARY) .
+	@printf '[*] built dist/%s (version %s)\n' "$(BINARY)" "$(VERSION)"
 
-.PHONY: build_snapshot
-build_snapshot: ## Build binaries for all platforms using goreleaser (snapshot)
-	goreleaser build --snapshot --clean
+.PHONY: snapshot
+snapshot: ## Build snapshot binaries with goreleaser, as release.yml would
+	@goreleaser build --snapshot --clean
 
-# LINT
-.PHONY: fmt
-fmt: ## Format Go source files
-	gofmt -w .
+##@ TEST
 
-.PHONY: fmt_check
-fmt_check: ## Check Go formatting
-	@unformatted=$$(gofmt -l .); \
-	if [[ -n "$$unformatted" ]]; then \
-		echo "Unformatted Go files:"; \
-		echo "$$unformatted"; \
-		exit 1; \
-	fi
-
-.PHONY: mod_check
-mod_check: ## Check go.mod/go.sum tidiness
-	go mod tidy
-	git diff --exit-code go.mod go.sum
-
-.PHONY: lint
-lint: fmt_check mod_check vet ## Run lint checks
-
-.PHONY: vet
-vet: ## Run go vet
-	go vet ./...
-
-# TEST
 .PHONY: test
-test: ## Run all tests with race detector (requires network for integration tests)
-	go test -race -count=1 ./...
+test: ## Run tests with the race detector
+	@go test -race -count=1 ./...
+
+.PHONY: test_integration
+test_integration: ## Run the integration tests too (needs PRONGS_TEST_HOST)
+	@go test -race -count=1 -tags=integration ./...
 
 .PHONY: test_coverage
-test_coverage: ## Run tests with coverage report over internal packages
-	go test -race -count=1 -coverpkg=./internal/... -coverprofile=coverage.out ./...
-	go tool cover -func=coverage.out
+test_coverage: ## Run tests with a coverage report (internal/ only; cmd/ is wiring)
+	@go test -race -count=1 -tags=integration -coverpkg=./internal/... \
+		-coverprofile=coverage.out ./...
+	@go tool cover -func=coverage.out
+	@rm coverage.out
 
-.PHONY: test_unit
-test_unit: ## Run unit tests only (no network)
-	go test -v -run 'TestExpand' ./internal/target/...
+##@ LINT
 
-# GET
+.PHONY: format
+format: ## Format all Go source and group imports
+	@$(GOIMPORTS) -w .
+
+.PHONY: check_format
+check_format: ## Fail if any file needs formatting
+	@out="$$($(GOIMPORTS) -l .)"; test -z "$$out" || { printf 'not formatted:\n%s\n' "$$out"; exit 1; }
+
+.PHONY: check_mod
+check_mod: ## Fail if go.mod/go.sum are not tidy
+	@go mod tidy
+	@git diff --exit-code -- go.mod go.sum || \
+	  { printf 'go.mod/go.sum not tidy; commit the diff\n' >&2; exit 1; }
+
+.PHONY: vet
+vet: ## Run go vet, including the integration-tagged files
+	@go vet ./...
+	@go vet -tags=integration ./...
+
+.PHONY: check_cross
+check_cross: ## Type-check the windows and darwin builds
+	@GOOS=windows go vet ./...
+	@GOOS=darwin go vet ./...
+
+.PHONY: check_all
+check_all: check_format check_mod vet check_cross ## Run all static checks
+
+.PHONY: vuln
+vuln: ## Scan for known vulnerabilities reachable from this code
+	@go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+##@ DOCKER
+
+.PHONY: docker_build
+docker_build: ## Build the prongs container image
+	@docker build -t $(BINARY) .
+
+.PHONY: docker_run
+docker_run: ## Run the container image against scanme.nmap.org
+	@docker run --rm -e TARGET_CIDRS=45.33.32.156/32 $(BINARY) scan --all
+
+##@ GET
+
 .PHONY: get_changelog
-get_changelog: ## Print release notes for TAG to stdout (default: latest tag; override with TAG=v1.0.0)
+get_changelog: ## Print release notes for TAG to stdout (TAG=v1.0.0)
 	@tag="$(TAG)"; tag="$${tag#v}"; \
 	if [[ -z "$$tag" ]]; then \
-	  printf 'get_changelog: TAG is empty; pass TAG=v1.0.0 or create a git tag\n' >&2; \
+	  printf 'get_changelog: TAG is empty; pass TAG=v1.0.0\n' >&2; \
 	  exit 1; \
 	fi; \
 	notes="$$(awk -v tag="$$tag" ' \
@@ -83,18 +107,16 @@ get_changelog: ## Print release notes for TAG to stdout (default: latest tag; ov
 	fi; \
 	printf '%s\n' "$$notes"
 
+.PHONY: get_version
+get_version: ## Print the version that would be baked into the binary
+	@echo "$(VERSION)"
+
+##@ CI
+
 .PHONY: ci
-ci: lint test ## Run all CI checks locally
+ci: check_all test ## Run everything CI runs
 
-# TASKS
 .PHONY: clean
-clean: ## Remove build artifacts
-	rm -rf bin/ dist/ install.sh install.ps1 checksums.txt
-
-.PHONY: docker_build
-docker_build: ## Build Docker image
-	docker build -t prongs .
-
-.PHONY: docker_run
-docker_run: ## Run Docker image against scanme.nmap.org
-	docker run --rm -e TARGET_CIDRS=45.33.32.156/32 prongs scan --all
+clean: ## Remove build output and the generated release artefacts
+	@rm -rf dist install.sh install.ps1 checksums.txt checksums.txt.sigstore.json coverage.out
+	@printf '[*] cleaned\n'

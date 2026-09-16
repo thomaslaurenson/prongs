@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.6.0 - 2026-09-16
+
+### Added
+
+- Show scan progress on stderr, suppressed when stderr is not a terminal
+- Add a --debug flag reporting what was resolved and probed
+- Complete scanner names and output formats in the shell
+
+### Changed
+
+- Send findings to stdout and everything else to stderr, so a redirected scan captures only findings
+- Mark human-readable output with the standard [*] and [!] prefixes
+- Stop a scan cleanly on Ctrl-C, exiting 130 without a message
+- Reject --all together with --scanner, and a concurrency below one
+
+### Fixed
+
+- Point the release workflow at the gpipe action that exists, so a tagged release publishes
+- Stop an unresponsive SSH host holding a worker for the rest of the scan
+- Queue scan work as it runs rather than up front, so a large range no longer exhausts memory
+
+### Updated
+
+- Raise the minimum Go version to 1.27
+
 ## 0.5.0 - 2026-07-22
 
 ### Added

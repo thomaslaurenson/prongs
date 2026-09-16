@@ -2,24 +2,19 @@ name: Tag
 
 on:
   push:
-    tags:
-      - "v*"
+    tags: ["v*"]
 
 permissions:
-  contents: write
-  id-token: write
+  contents: read
 
 jobs:
-
   lint:
     uses: ./.github/workflows/lint.yml
-    secrets: inherit
-
   test:
     uses: ./.github/workflows/test.yml
-    secrets: inherit
-
   release:
     needs: [lint, test]
     uses: ./.github/workflows/release.yml
-    secrets: inherit
+    permissions:
+      contents: write
+      id-token: write

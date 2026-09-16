@@ -1,9 +1,11 @@
 package target_test
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/thomaslaurenson/prongs/internal/target"
@@ -47,12 +49,12 @@ func TestResolveFromArgs(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got, err := target.Resolve(tc.targets, "")
+			got, err := target.Resolve(tc.targets, "", "")
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			if !slices.Equal(got, tc.want) {
-				t.Errorf("Resolve(%v, \"\") = %v, want %v", tc.targets, got, tc.want)
+				t.Errorf("Resolve(%v) = %v, want %v", tc.targets, got, tc.want)
 			}
 		})
 	}
@@ -96,7 +98,7 @@ func TestResolveFromFile(t *testing.T) {
 			if err := os.WriteFile(path, []byte(tc.contents), 0o600); err != nil {
 				t.Fatalf("WriteFile: %v", err)
 			}
-			got, err := target.Resolve(nil, path)
+			got, err := target.Resolve(nil, path, "")
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -109,15 +111,15 @@ func TestResolveFromFile(t *testing.T) {
 
 func TestResolveFromFileMissing(t *testing.T) {
 	t.Parallel()
-	_, err := target.Resolve(nil, "/nonexistent/targets.txt")
+	_, err := target.Resolve(nil, "/nonexistent/targets.txt", "")
 	if err == nil {
 		t.Fatal("expected error for missing file, got nil")
 	}
 }
 
 func TestResolveFromEnv(t *testing.T) {
-	t.Setenv("TARGET_CIDRS", "192.168.0.0/24,10.0.0.0/8")
-	got, err := target.Resolve(nil, "")
+	t.Parallel()
+	got, err := target.Resolve(nil, "", "192.168.0.0/24,10.0.0.0/8")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -127,10 +129,58 @@ func TestResolveFromEnv(t *testing.T) {
 	}
 }
 
-func TestResolveNoSource(t *testing.T) {
-	t.Setenv("TARGET_CIDRS", "")
-	_, err := target.Resolve(nil, "")
+func TestResolvePriority(t *testing.T) {
+	t.Parallel()
+	// Inline values outrank the environment, so a run with both uses the flag.
+	got, err := target.Resolve([]string{"192.168.0.0/24"}, "", "10.0.0.0/8")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := []string{"192.168.0.0/24"}; !slices.Equal(got, want) {
+		t.Errorf("Resolve with args and env = %v, want %v", got, want)
+	}
+}
+
+func TestResolveNoTargets(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		targets []string
+		env     string
+	}{
+		{name: "no source at all"},
+		{name: "inline values are all separators", targets: []string{","}},
+		{name: "inline values are all whitespace", targets: []string{" ", "\t"}},
+		{name: "environment value is all separators", env: ",,"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			// Resolve must report this rather than returning an empty list with a
+			// nil error, which would leave the caller blaming CIDR expansion for
+			// input that never parsed.
+			got, err := target.Resolve(tc.targets, "", tc.env)
+			if !errors.Is(err, target.ErrNoTargets) {
+				t.Errorf("Resolve(%v, \"\", %q) error = %v, want ErrNoTargets", tc.targets, tc.env, err)
+			}
+			if got != nil {
+				t.Errorf("Resolve returned %v alongside the error, want nil", got)
+			}
+		})
+	}
+}
+
+func TestResolveEmptyFile(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "targets.txt")
+	if err := os.WriteFile(path, []byte("\n  \n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	_, err := target.Resolve(nil, path, "")
 	if err == nil {
-		t.Fatal("expected error when no targets are provided, got nil")
+		t.Fatal("expected error for a file with no entries, got nil")
+	}
+	if !strings.Contains(err.Error(), path) {
+		t.Errorf("error = %q, want it to name the file", err)
 	}
 }

@@ -1,7 +1,7 @@
 package scanner
 
-// All is the master list of every scanner.
-// Adding a new scanner requires only a single line here.
+// All is the master list of every scanner, in the order they are offered to a
+// user. Adding a scanner is a single line here.
 var All = []Scanner{
 	&PasswordSSH{},
 	&AccessibleRDP{},
@@ -9,7 +9,7 @@ var All = []Scanner{
 	&InsecureHTTP{},
 }
 
-// ByName maps each scanner name to its implementation for O(1) lookup.
+// ByName maps each scanner name to its implementation.
 var ByName = func() map[string]Scanner {
 	m := make(map[string]Scanner, len(All))
 	for _, s := range All {
@@ -18,7 +18,7 @@ var ByName = func() map[string]Scanner {
 	return m
 }()
 
-// Defaults returns all scanners that are enabled by default (DefaultEnabled() == true).
+// Defaults returns the scanners --all selects, in registration order.
 func Defaults() []Scanner {
 	var out []Scanner
 	for _, s := range All {

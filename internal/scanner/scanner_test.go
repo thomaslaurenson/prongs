@@ -1,68 +1,56 @@
 package scanner_test
 
 import (
+	"context"
 	"net"
 	"testing"
 
 	"github.com/thomaslaurenson/prongs/internal/scanner"
 )
 
-var testIP = net.ParseIP("45.33.32.156") // scanme.nmap.org
+// loopback is probed by the cancellation cases. Nothing has to be listening on
+// it: a cancelled context fails the dial before the address matters.
+var loopback = net.ParseIP("127.0.0.1")
 
 func TestScannerMetadata(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
+		name          string
 		s             scanner.Scanner
-		wantName      string
 		wantDefaultOn bool
 	}{
-		{&scanner.PasswordSSH{}, "password-ssh", true},
-		{&scanner.AccessibleRDP{}, "accessible-rdp", false},
-		{&scanner.AccessibleDB{}, "accessible-db", true},
+		{name: "password-ssh", s: &scanner.PasswordSSH{}, wantDefaultOn: true},
+		{name: "accessible-rdp", s: &scanner.AccessibleRDP{}, wantDefaultOn: false},
+		{name: "accessible-db", s: &scanner.AccessibleDB{}, wantDefaultOn: true},
+		{name: "insecure-http", s: &scanner.InsecureHTTP{}, wantDefaultOn: true},
 	}
-	for _, tt := range tests {
-		t.Run(tt.wantName, func(t *testing.T) {
-			if got := tt.s.Name(); got != tt.wantName {
-				t.Errorf("Name() = %q, want %q", got, tt.wantName)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tc.s.Name(); got != tc.name {
+				t.Errorf("Name() = %q, want %q", got, tc.name)
 			}
-			if got := tt.s.DefaultEnabled(); got != tt.wantDefaultOn {
-				t.Errorf("DefaultEnabled() = %v, want %v", got, tt.wantDefaultOn)
+			if got := tc.s.DefaultEnabled(); got != tc.wantDefaultOn {
+				t.Errorf("DefaultEnabled() = %v, want %v", got, tc.wantDefaultOn)
 			}
 		})
 	}
 }
 
-// TestRDPNotExposed checks that scanme.nmap.org does NOT have RDP open.
-// This is a negative test - validates the scanner doesn't false-positive.
-func TestRDPNotExposed(t *testing.T) {
-	s := &scanner.AccessibleRDP{}
-	_, found := s.Run(testIP)
-	if found {
-		t.Errorf("RDP reported open on scanme.nmap.org - unexpected")
-	}
-}
+// TestScannersHonourCancellation checks every scanner stops on a cancelled
+// context rather than probing anyway. Without it a Ctrl-C during a large scan
+// would still work through every remaining host.
+func TestScannersHonourCancellation(t *testing.T) {
+	t.Parallel()
+	for _, s := range scanner.All {
+		t.Run(s.Name(), func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
 
-// TestDBNotExposed checks that scanme.nmap.org does NOT have DB ports open.
-func TestDBNotExposed(t *testing.T) {
-	s := &scanner.AccessibleDB{}
-	_, found := s.Run(testIP)
-	if found {
-		t.Errorf("DB port reported open on scanme.nmap.org - unexpected")
-	}
-}
-
-// TestSSHPasswordAuthEnabled checks scanme.nmap.org, which is known to have
-// password auth enabled. This is the primary regression test - it catches
-// any breakage in the SSH probing logic.
-func TestSSHPasswordAuthEnabled(t *testing.T) {
-	s := &scanner.PasswordSSH{}
-	r, found := s.Run(testIP)
-	if !found {
-		t.Error("expected password-ssh to be reported open on scanme.nmap.org")
-	}
-	if r.Port != 22 {
-		t.Errorf("expected port 22, got %d", r.Port)
-	}
-	if r.ScanType != "password-ssh" {
-		t.Errorf("expected scan type 'password-ssh', got %s", r.ScanType)
+			if _, found := s.Run(ctx, loopback); found {
+				t.Errorf("%s reported a finding on a cancelled context", s.Name())
+			}
+		})
 	}
 }
