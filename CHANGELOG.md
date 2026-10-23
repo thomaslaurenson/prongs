@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.1 - 2026-10-23
+
+### Updated
+
+- Build release binaries with the newest Go 1.27 patch release
+- Update the SSH library and other dependencies
+
 ## 0.6.0 - 2026-09-16
 
 ### Added
